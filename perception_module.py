@@ -5,7 +5,11 @@ from transformers import pipeline
 from deepface import DeepFace
 import cv2
 import threading
+import logging
+from transformers.utils import logging as hf_logging
 
+logging.getLogger("transformers").setLevel(logging.ERROR)
+hf_logging.set_verbosity_error()
 class PerceptionModule:
 
     def __init__(self):
@@ -37,6 +41,21 @@ class PerceptionModule:
         os.remove(temp_filename)
         return result["text"]
 
+    def percieve_combined(self):
+        emotion_thread = self.EmotionDetectionThread()
+        emotion_thread.start()
+        audio = self.record_audio()
+        emotion_thread.stop()
+        emotion_thread.join()
+
+        visual_emotions = emotion_thread.recorded
+        transcript = self.speech_to_text_whisper(audio)
+        emotional_tone = self.get_emotion_scores(transcript)
+        bias_str = self.hf_to_deepface_emotion_map.get(emotional_tone, "neutral")
+        dominant_emotion = self.most_common(visual_emotions, bias_str=bias_str, bias=0.7)
+
+        return transcript, dominant_emotion
+
     def record_audio(self):
         cap = cv2.VideoCapture(0)
         with sr.Microphone() as source:
@@ -46,7 +65,7 @@ class PerceptionModule:
             print("Recording complete.")
             return audio
 
-    def get_emotion_scores(text):
+    def get_emotion_scores(self, text):
         classifier = pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base", return_all_scores=True)
         return max(classifier(text)[0], key=lambda x: x['score'])["label"]
 
@@ -83,7 +102,6 @@ class PerceptionModule:
                 # Display emotion label
                 cv2.putText(frame, f'Emotion: {emotion}', (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                cv2.imshow('Webcam - Emotion Detection', frame)
 
             self.cap.release()
             cv2.destroyAllWindows()
@@ -91,7 +109,7 @@ class PerceptionModule:
         def stop(self):
             self._stop_event.set()
 
-    def most_common(lst, bias_str, bias=.5):
+    def most_common(self, lst, bias_str, bias=.5):
         return max(set(lst), key=lambda x: lst.count(x)* (1+ (bias if x is bias_str else 0)))
 
     hf_to_deepface_emotion_map = {

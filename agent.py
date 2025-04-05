@@ -1,5 +1,9 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import pyttsx3
+from perception_module import PerceptionModule
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 class ConversationMemory:
     """Memory structure to store conversation history."""
@@ -47,7 +51,8 @@ class MentalHealthCoach:
         """
         # Store coach name
         self.coach_name = coach_name
-        
+        self.perception = PerceptionModule()
+        self.tts_engine = pyttsx3.init()
         # Determine the device to use
         self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"Using device: {self.device}")
@@ -89,7 +94,15 @@ class MentalHealthCoach:
             "Remember: your goal is to understand the user's complete mental state, which may be perfectly healthy.\n"
             f"IMPORTANT: You are {self.coach_name}, a mental health coach in this conversation. The user is talking with you."
         )
-    
+
+    def speak(self, text):
+        try:
+            self.tts_engine.stop()
+            self.tts_engine.say(text)
+            self.tts_engine.runAndWait()
+        except Exception as e:
+            print(f"[TTS Error] {e}")
+
     def debug_print(self, message):
         """Print debug messages in gray italic text.
         
@@ -150,7 +163,7 @@ Only specify MODE and PROMPT once in the response.
                     input_ids,
                     attention_mask=attention_mask,
                     max_new_tokens=200,  # Give enough tokens for a thorough evaluation
-                    do_sample=False,
+                    do_sample=True,
                     pad_token_id=self.tokenizer.pad_token_id
                 )
             
@@ -403,17 +416,21 @@ Only specify MODE and PROMPT once in the response.
         initial_greeting = self.get_initial_greeting()
         formatted_greeting = self.format_for_terminal(initial_greeting)
         print(f"{self.coach_name}: {formatted_greeting}")
-        
+        self.speak(formatted_greeting)
         while True:
-            user_input = input("You: ").strip()
-            if user_input.lower() in ["quit", "exit"]:
-                print(f"{self.coach_name}: Take care of yourself. Goodbye!")
+            print("\nListening and analyzing...")
+            transcript, emotion = self.perception.percieve_combined()  # New helper below
+            print(f"You said: {transcript}")
+            print(f"Detected emotion: {emotion}")
+            if transcript.lower() in ["quit", "exit", 'goodbye']:
+                self.speak("Take care of yourself. Goodbye!")
                 break
-            
-            response = self.generate_response(user_input)
+            # Add user input to memory with emotion noted
+            self.memory.add_message("User", f"[Emotion: {emotion}] {transcript}")
+            response = self.generate_response(transcript)
             formatted_response = self.format_for_terminal(response)
             print(f"{self.coach_name}: {formatted_response}")
-    
+            self.speak(formatted_response)
     def clear_conversation(self):
         """Clear the conversation history."""
         self.memory.clear_memory()
