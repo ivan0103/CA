@@ -422,7 +422,7 @@ Only specify MODE and PROMPT once in the response.
             transcript, emotion = self.perception.percieve_combined()  # New helper below
             print(f"You said: {transcript}")
             print(f"Detected emotion: {emotion}")
-            if transcript.lower() in ["quit", "exit", 'goodbye']:
+            if transcript.lower() in ["quit", "exit", 'goodbye', 'good bye']:
                 self.speak("Take care of yourself. Goodbye!")
                 break
             # Add user input to memory with emotion noted
@@ -431,6 +431,7 @@ Only specify MODE and PROMPT once in the response.
             formatted_response = self.format_for_terminal(response)
             print(f"{self.coach_name}: {formatted_response}")
             self.speak(formatted_response)
+
     def clear_conversation(self):
         """Clear the conversation history."""
         self.memory.clear_memory()
