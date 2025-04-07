@@ -6,6 +6,7 @@ from deepface import DeepFace
 import cv2
 import threading
 import logging
+import platform
 from transformers.utils import logging as hf_logging
 
 logging.getLogger("transformers").setLevel(logging.ERROR)
@@ -15,6 +16,57 @@ class PerceptionModule:
     def __init__(self):
         self.model = whisper.load_model("medium")
         self.recognizer = sr.Recognizer()
+        self.recognizer.pause_threshold = 2.0
+
+    def play_beep(self, sound_type="start"):
+        """Generate a beep sound to indicate recording status.
+        
+        Args:
+            sound_type: Type of sound to play - "start" for recording start, "end" for recording end
+        """
+        try:
+            # On macOS
+            if platform.system() == 'Darwin':
+                if sound_type == "start":
+                    os.system("afplay /System/Library/Sounds/Funk.aiff")
+                else:  # end sound
+                    os.system("afplay /System/Library/Sounds/Blow.aiff")
+            # On Windows
+            elif platform.system() == 'Windows':
+                try:
+                    import winsound
+                    if sound_type == "start":
+                        winsound.Beep(1000, 200)  # 1000 Hz for 200 ms
+                    else:  # end sound
+                        winsound.Beep(800, 200)   # 800 Hz for 200 ms
+                except ImportError:
+                    if sound_type == "start":
+                        print("\n🎙️ RECORDING NOW 🎙️\n")
+                    else:
+                        print("\n🛑 RECORDING STOPPED 🛑\n")
+            # On Linux or other systems
+            else:
+                # Use print as fallback
+                if sound_type == "start":
+                    print("\n🎙️ RECORDING NOW 🎙️\n")
+                else:
+                    print("\n🛑 RECORDING STOPPED 🛑\n")
+        except Exception as e:
+            print(f"Could not generate beep: {e}")
+            if sound_type == "start":
+                print("\n🎙️ RECORDING NOW 🎙️\n")
+            else:
+                print("\n🛑 RECORDING STOPPED 🛑\n")
+            
+    def play_beep_async(self, sound_type="start"):
+        """Play beep sound in a separate thread to not block recording.
+        
+        Args:
+            sound_type: Type of sound to play - "start" for recording start, "end" for recording end
+        """
+        beep_thread = threading.Thread(target=self.play_beep, args=(sound_type,))
+        beep_thread.daemon = True  # Thread will exit when main program exits
+        beep_thread.start()
 
     def speech_to_text_whisper(self, audio):
         """
@@ -57,12 +109,19 @@ class PerceptionModule:
         return transcript, dominant_emotion
 
     def record_audio(self):
-        cap = cv2.VideoCapture(0)
         with sr.Microphone() as source:
+            # Do all preparation first
             self.recognizer.adjust_for_ambient_noise(source)
-            print("Recording... Speak now!")
-            audio = self.recognizer.listen(source)
-            print("Recording complete.")
+            
+            # Play start beep in background thread at the same time recording starts
+            self.play_beep_async("start")
+            
+            # Start recording immediately
+            audio = self.recognizer.listen(source, timeout=10, phrase_time_limit=None)
+            
+            # Play end beep to indicate recording is complete
+            self.play_beep_async("end")
+            
             return audio
 
     def get_emotion_scores(self, text):

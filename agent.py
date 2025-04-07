@@ -3,6 +3,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import pyttsx3
 from perception_module import PerceptionModule
 import os
+import platform
+import random
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 class ConversationMemory:
@@ -53,6 +55,7 @@ class MentalHealthCoach:
         self.coach_name = coach_name
         self.perception = PerceptionModule()
         self.tts_engine = pyttsx3.init()
+        self.current_voice_id = None  # Track the current voice ID
         # Determine the device to use
         self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"Using device: {self.device}")
@@ -97,11 +100,67 @@ class MentalHealthCoach:
 
     def speak(self, text):
         try:
+            # Ensure the voice is set before speaking
+            if self.current_voice_id:
+                self.tts_engine.setProperty('voice', self.current_voice_id)
             self.tts_engine.stop()
             self.tts_engine.say(text)
             self.tts_engine.runAndWait()
         except Exception as e:
             print(f"[TTS Error] {e}")
+
+    def list_available_voices(self):
+        """List all available TTS voices on the system and let user select one.
+        
+        Returns:
+            The selected voice ID
+        """
+        # Reinitialize engine to ensure we get a fresh list
+        self.tts_engine = pyttsx3.init()
+        voices = self.tts_engine.getProperty('voices')
+        
+        if not voices:
+            print("No voices found on the system. Using default voice.")
+            return None
+            
+        print("\nAvailable voices:")
+        for idx, voice in enumerate(voices):
+            # Print details about the voice
+            gender = voice.gender if hasattr(voice, 'gender') else 'unknown'
+            age = voice.age if hasattr(voice, 'age') else 'unknown'
+            print(f"{idx+1}. {voice.name} ({gender}, {age})")
+        
+        selected_idx = 0
+        while selected_idx < 1 or selected_idx > len(voices):
+            try:
+                selected_idx = int(input(f"\nSelect a voice (1-{len(voices)}): "))
+            except ValueError:
+                print("Please enter a valid number.")
+        
+        selected_voice = voices[selected_idx-1]
+        print(f"Selected voice: {selected_voice.name}")
+        return selected_voice.id
+        
+    def set_voice(self, voice_id):
+        """Set the TTS voice to use.
+        
+        Args:
+            voice_id: The ID of the voice to use
+        """
+        if not voice_id:
+            print("No voice ID provided, using default voice")
+            return
+            
+        print(f"Setting voice to {voice_id}")
+        # Reinitialize the engine to ensure clean state
+        self.tts_engine = pyttsx3.init()
+        self.tts_engine.setProperty('voice', voice_id)
+        self.current_voice_id = voice_id
+
+        # Test the voice to confirm it's working
+        print("Testing selected voice...")
+        self.tts_engine.say(f"Hello, just give me one second.")
+        self.tts_engine.runAndWait()
 
     def debug_print(self, message):
         """Print debug messages in gray italic text.
@@ -292,7 +351,7 @@ Only specify MODE and PROMPT once in the response.
                 output_ids = self.model.generate(
                     input_ids,
                     attention_mask=attention_mask,
-                    max_new_tokens=80,  # Use explicit max_new_tokens
+                    max_new_tokens=80,
                     do_sample=True,
                     top_p=0.9,
                     top_k=40,
@@ -412,25 +471,32 @@ Only specify MODE and PROMPT once in the response.
         print(f"{self.coach_name} Mental Health Coach Chat")
         print("Type 'quit' to exit the conversation.\n")
         
+        # Allow user to select a TTS voice
+        voice_id = self.list_available_voices()
+        self.set_voice(voice_id)
+        
         # Start the conversation with the coach speaking first
         initial_greeting = self.get_initial_greeting()
         formatted_greeting = self.format_for_terminal(initial_greeting)
         print(f"{self.coach_name}: {formatted_greeting}")
-        self.speak(formatted_greeting)
+        self.speak(initial_greeting)
+
         while True:
             print("\nListening and analyzing...")
-            transcript, emotion = self.perception.percieve_combined()  # New helper below
+            
+            transcript, emotion = self.perception.percieve_combined()
             print(f"You said: {transcript}")
             print(f"Detected emotion: {emotion}")
             if transcript.lower() in ["quit", "exit", 'goodbye', 'good bye']:
                 self.speak("Take care of yourself. Goodbye!")
                 break
+                
             # Add user input to memory with emotion noted
             self.memory.add_message("User", f"[Emotion: {emotion}] {transcript}")
             response = self.generate_response(transcript)
             formatted_response = self.format_for_terminal(response)
             print(f"{self.coach_name}: {formatted_response}")
-            self.speak(formatted_response)
+            self.speak(response)
 
     def clear_conversation(self):
         """Clear the conversation history."""
