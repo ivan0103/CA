@@ -60,6 +60,10 @@ class MentalHealthCoach:
         self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"Using device: {self.device}")
         
+        # Intrusive thoughts configuration
+        self.intrusive_thoughts_enabled = False
+        self.intrusive_thoughts_level = 0.3  # Default level (0.0 to 1.0)
+        
         # Load tokenizer and model
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         
@@ -385,6 +389,136 @@ Only specify MODE and PROMPT once in the response.
             self.memory.add_message("Assistant", default_greeting)
             return default_greeting
     
+    def generate_intrusive_thoughts(self, conversation_history):
+        """Generate slightly modified conversation history to simulate intrusive thoughts.
+        
+        Args:
+            conversation_history: The original conversation history
+            
+        Returns:
+            Modified conversation history with slight changes
+        """
+        if not self.intrusive_thoughts_enabled or self.intrusive_thoughts_level <= 0.0:
+            return conversation_history
+        
+        # Split the conversation into individual messages
+        messages = []
+        current_message = []
+        current_speaker = None
+        
+        # Parse the conversation history into separate messages
+        for line in conversation_history.split('\n'):
+            if line.startswith('<|user|>'):
+                if current_speaker:
+                    messages.append((current_speaker, '\n'.join(current_message)))
+                current_speaker = 'user'
+                current_message = []
+            elif line.startswith('<|assistant|>'):
+                if current_speaker:
+                    messages.append((current_speaker, '\n'.join(current_message)))
+                current_speaker = 'assistant'
+                current_message = []
+            else:
+                current_message.append(line)
+        
+        # Add the last message if it exists
+        if current_speaker and current_message:
+            messages.append((current_speaker, '\n'.join(current_message)))
+        
+        # Nothing to modify
+        if not messages:
+            return conversation_history
+        
+        # Identify user messages only
+        user_indices = [i for i, (speaker, _) in enumerate(messages) if speaker == 'user']
+        if not user_indices:
+            return conversation_history
+        
+        # Calculate how many messages to modify based on intrusive thoughts level
+        # Level 0.1 = 10% of user messages, level 1.0 = 100% of user messages
+        num_to_modify = max(1, int(len(user_indices) * self.intrusive_thoughts_level))
+        
+        # Randomly select which user messages to modify
+        import random
+        indices_to_modify = random.sample(user_indices, min(num_to_modify, len(user_indices)))
+        
+        # Debug information
+        self.debug_print(f"INTRUSIVE THOUGHTS (level {self.intrusive_thoughts_level}):")
+        self.debug_print(f"Modifying {num_to_modify} out of {len(user_indices)} user messages.")
+        
+        # For each selected message, generate a modified version
+        for idx in indices_to_modify:
+            speaker, content = messages[idx]
+            
+            # Level determines how much to modify
+            level_descriptor = "very slightly" if self.intrusive_thoughts_level < 0.3 else \
+                              "somewhat" if self.intrusive_thoughts_level < 0.6 else \
+                              "significantly"
+            
+            prompt = f"""<|system|>
+You are simulating intrusive thoughts for a mental health coach. You need to {level_descriptor} modify the following user message.
+Make only subtle changes that could represent random thoughts or slight misinterpretations.
+
+Intensity level: {self.intrusive_thoughts_level * 10}/10
+
+Guidelines:
+1. Change details that could be misremembered or misinterpreted
+2. You may slightly alter emotions, intentions, or specific words
+3. Do not change the main topic or completely rewrite the message
+4. The higher the intensity level, the more noticeable the changes should be
+5. Preserve the original message length and structure
+
+Original message:
+{content}
+
+Return ONLY the modified message with your subtle changes. Do not include any explanation, commentary, or additional text.
+<|assistant|>
+"""
+            
+            # Generate modified message
+            inputs = self.tokenizer(prompt, return_tensors='pt', padding=True)
+            input_ids = inputs.input_ids.to(self.device)
+            attention_mask = inputs.attention_mask.to(self.device)
+            
+            try:
+                with torch.no_grad():
+                    output_ids = self.model.generate(
+                        input_ids,
+                        attention_mask=attention_mask,
+                        max_new_tokens=len(content.split()) * 2,  # Allow twice the token count for modification
+                        do_sample=True,
+                        temperature=0.7,  # Some randomness in the modifications
+                        pad_token_id=self.tokenizer.pad_token_id
+                    )
+                
+                # Decode only the newly generated tokens
+                generated_ids = output_ids[0, input_ids.shape[1]:]
+                modified_message = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+                
+                # Check if we have a valid modified message
+                if len(modified_message) < 5:
+                    # Failed to generate proper intrusive thought, keep original
+                    self.debug_print(f"Failed to modify message {idx}. Using original.")
+                else:
+                    self.debug_print(f"Message {idx} modified:")
+                    self.debug_print(f"Original: {content}")
+                    self.debug_print(f"Modified: {modified_message}")
+                    # Update the message with the modified content
+                    messages[idx] = (speaker, modified_message)
+                    
+            except Exception as e:
+                print(f"Error modifying message {idx}: {e}")
+        
+        # Reconstruct the conversation with modified messages
+        modified_history = ""
+        for speaker, content in messages:
+            if speaker == 'user':
+                modified_history += f"<|user|>\n{content}\n"
+            else:
+                modified_history += f"<|assistant|>\n{content}\n"
+        
+        return modified_history
+    
     def generate_response(self, user_input):
         """Generate a response to the user input.
         
@@ -398,7 +532,13 @@ Only specify MODE and PROMPT once in the response.
         self.memory.add_message("User", user_input)
         
         # Format the prompt following Llama 3 chat template
-        chat_history = self.memory.get_formatted_history()
+        original_chat_history = self.memory.get_formatted_history()
+        
+        # If intrusive thoughts are enabled, generate a modified conversation history
+        if self.intrusive_thoughts_enabled:
+            chat_history = self.generate_intrusive_thoughts(original_chat_history)
+        else:
+            chat_history = original_chat_history
         
         # Evaluate conversation to determine approach
         evaluation = self.evaluate_conversation(chat_history)
@@ -422,8 +562,8 @@ Only specify MODE and PROMPT once in the response.
         input_ids = inputs.input_ids.to(self.device)
         attention_mask = inputs.attention_mask.to(self.device)
         
-        # Set appropriate token limits based on mode
-        adjusted_max_tokens = 150 if mode == "guidance" else 80
+        # Set appropriate token limits based on mode - increased for more substantial responses
+        adjusted_max_tokens = 250 if mode == "guidance" else 150
         
         try:
             with torch.no_grad():
@@ -468,8 +608,25 @@ Only specify MODE and PROMPT once in the response.
     
     def chat(self):
         """Run an interactive chat session with the agent."""
+        # ANSI color codes for colored text
+        LIGHT_BLUE = "\033[94m"
+        RESET = "\033[0m"  # Reset all formatting
+        
         print(f"{self.coach_name} Mental Health Coach Chat")
         print("Type 'quit' to exit the conversation.\n")
+        
+        # Set up intrusive thoughts
+        enable_intrusive = input("Enable intrusive thoughts? (y/n): ").lower().strip() == 'y'
+        self.intrusive_thoughts_enabled = enable_intrusive
+        
+        if self.intrusive_thoughts_enabled:
+            try:
+                level = float(input("Enter intrusive thoughts level (0.1-1.0): "))
+                self.intrusive_thoughts_level = min(1.0, max(0.1, level))
+                print(f"Intrusive thoughts enabled at level {self.intrusive_thoughts_level}")
+            except ValueError:
+                self.intrusive_thoughts_level = 0.3
+                print(f"Using default intrusive thoughts level: {self.intrusive_thoughts_level}")
         
         # Allow user to select a TTS voice
         voice_id = self.list_available_voices()
@@ -478,15 +635,11 @@ Only specify MODE and PROMPT once in the response.
         # Start the conversation with the coach speaking first
         initial_greeting = self.get_initial_greeting()
         formatted_greeting = self.format_for_terminal(initial_greeting)
-        print(f"{self.coach_name}: {formatted_greeting}")
+        print(f"{self.coach_name}: {LIGHT_BLUE}{formatted_greeting}{RESET}")
         self.speak(initial_greeting)
 
         while True:
-            print("\nListening and analyzing...")
-            
             transcript, emotion = self.perception.percieve_combined()
-            print(f"You said: {transcript}")
-            print(f"Detected emotion: {emotion}")
             if transcript.lower() in ["quit", "exit", 'goodbye', 'good bye']:
                 self.speak("Take care of yourself. Goodbye!")
                 break
@@ -495,7 +648,7 @@ Only specify MODE and PROMPT once in the response.
             self.memory.add_message("User", f"[Emotion: {emotion}] {transcript}")
             response = self.generate_response(transcript)
             formatted_response = self.format_for_terminal(response)
-            print(f"{self.coach_name}: {formatted_response}")
+            print(f"{self.coach_name}: {LIGHT_BLUE}{formatted_response}{RESET}")
             self.speak(response)
 
     def clear_conversation(self):
